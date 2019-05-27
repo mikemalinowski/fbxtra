@@ -2,13 +2,12 @@ import fbx
 
 
 # --------------------------------------------------------------------------
-def layers(scene):
+def layers(fbx_scene):
     """
     Gives all the animation layers within the given scene.
-    
-    :param scene: The scene to list the layers from
-    :type scene: fbx.FbxScene
 
+    :param fbx_scene: The scene to list the layers from
+    :type fbx_scene: fbx.FbxScene
     :return: list(fbx.FbxAnimLayer, ...)
     """
     # -- Define a list to collate our matched
@@ -16,11 +15,11 @@ def layers(scene):
     all_layers = list()
 
     # -- Cycle over all the obects in the scnee
-    for idx in range(scene.GetSrcObjectCount()):
+    for idx in range(fbx_scene.GetSrcObjectCount()):
 
         # -- Check if this item is indeed an animation
         # -- layer and scoop it if it is.
-        candidate = scene.GetSrcObject(
+        candidate = fbx_scene.GetSrcObject(
             fbx.FbxCriteria.ObjectType(
                 fbx.FbxAnimLayer.ClassId,
             ),
@@ -34,7 +33,7 @@ def layers(scene):
 
 
 # --------------------------------------------------------------------------
-def remove_tr_keys(node):
+def remove_tr_keys(node, zero=False):
     """
     This removes any keys (fcurves) driving the translation or rotation
     of the given node.
@@ -54,3 +53,19 @@ def remove_tr_keys(node):
 
         if trn_curve:
             trn_curve.Destroy(True)
+
+    if zero:
+        node.LclRotation.Set(
+            fbx.FbxDouble3(
+                0.0,
+                0.0,
+                0.0,
+            )
+        )
+        node.LclTranslation.Set(
+            fbx.FbxDouble3(
+                0.0,
+                0.0,
+                0.0,
+            )
+        )

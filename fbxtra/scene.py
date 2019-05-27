@@ -153,8 +153,9 @@ def clear(scene, excluding=None):
     for idx, node, in enumerate(excluding):
 
         # -- Ensure we're working with Fbx objects
-        if not isinstance(node, fbx.FbxNode):
-            excluding[idx] = get(node)
+        if not isinstance(node, fbx.FbxObject):
+            node = get(scene, node)
+            excluding[idx] = node
 
         # -- Move the item to the scene root
         _node.set_parent(excluding[idx], None)
