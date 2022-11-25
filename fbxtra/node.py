@@ -74,7 +74,7 @@ def get_parent(node, recursive=False):
 
 
 # --------------------------------------------------------------------------
-def set_parent(node, parent):
+def set_parent(node, parent, keep_worldspace=True):
     """
     Re-parents the given node to be a child of the given parent.
 
@@ -85,12 +85,47 @@ def set_parent(node, parent):
         node will be made a child of the scene root (RootNode)
     :type parent: fbx.FbxNode
 
+    :param keep_worldspace: If True then the worldspace transform of the node
+        being reparented will be retained
+    :type keep_worldspace: bool
+
     :return: None
     """
     if not parent:
         parent = node.GetScene().GetRootNode()
 
+    if not keep_worldspace:
+        # -- In this situation we do not need to do any math
+        # -- to retain the worldspace transform. So we can just
+        # -- add the child and be done
+        parent.AddChild(node)
+        return
+
+    # -- To reach here we need to add the child whilst holding the relative
+    # -- transform
+    node_xfo = node.EvaluateGlobalTransform()
+    parent_xfo = parent.EvaluateGlobalTransform()
+    relative_xfo = node_xfo * parent_xfo.Inverse()
+
     parent.AddChild(node)
+
+    # -- We can only set via translate, rotate and scale, so get
+    # -- those out of the matrix, and we want a list of three
+    # -- items
+    translate = [v for v in relative_xfo.GetT()][:3]
+    rotate = [v for v in relative_xfo.GetR()][:3]
+    scale = [v for v in relative_xfo.GetS()][:3]
+
+    node.LclTranslation.Set(
+        fbx.FbxDouble3(*translate),
+    )
+    node.LclRotation.Set(
+        fbx.FbxDouble3(*rotate),
+    )
+
+    node.LclScaling.Set(
+        fbx.FbxDouble3(*scale),
+    )
 
 
 # --------------------------------------------------------------------------
