@@ -143,3 +143,53 @@ def all_of_type(node, property_type):
         prop = node.GetNextProperty(prop)
 
     return results
+
+
+# --------------------------------------------------------------------------------------
+def add_property(node, name, property_type, default_value, flags=None):
+    """
+    Adds a property to a node
+    
+    :param node: The node to add a property to
+    :type node: fbx.FbxNode
+    
+    :param name: The name/label to assign to the property
+    :type name: str
+    
+    :param property_type: The FbxProperty type to assign (such as fbx.FbxDoubleDT)
+    :type property_type: FbxDataType
+    
+    :param default_value: The value to assign to the property on creation
+    :type default_value: Variable
+    
+    :param flags: Any flags you want to assign
+    :type flags: dict
+    
+    :return: FbxProperty
+    """
+
+    property_ = fbx.FbxProperty.Create(
+        node, 
+        property_type, 
+        name,
+        name,
+    )
+    
+    flags_to_apply = {
+        fbx.FbxPropertyFlags.eUserDefined: True,
+        fbx.FbxPropertyFlags.eHidden: False,
+        fbx.FbxPropertyFlags.eUIHidden: False,
+        fbx.FbxPropertyFlags.eAnimatable: True,
+    }
+    flags_to_apply.update(flags or dict())
+    
+    for flag, value in flags_to_apply.items():
+        property_.ModifyFlag(
+            flag,
+            value,
+        )
+        
+    property_.Set(default_value)
+    property_.ConnectSrcObject(node)
+    
+    return property_

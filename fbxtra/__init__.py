@@ -21,3 +21,6 @@ from . import files
 from . import manager
 from . import node
 from . import scene
+from . import transforms
+from . import geometry
+from . import properties

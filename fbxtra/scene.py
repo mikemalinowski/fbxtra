@@ -9,7 +9,7 @@ from . import node as _node
 # --------------------------------------------------------------------------
 def get(scene, name):
     """
-    Gives direct access to the fbx.FbxObject with the given 
+    Gives direct access to the fbx.FbxObject with the given
     name. If none exists then None will be returned/
 
     :param scene: The fbx.FbxScene to search within
@@ -27,16 +27,38 @@ def get(scene, name):
     return None
 
 
+# --------------------------------------------------------------------------
+def get_top_level(scene):
+    """
+    Returns all the FbxNodes in the scene which are direct children of the scene
+    root.
+    
+    :param scene: The fbx.FbxScene to search within
+    :type scene: fbx.FbxScene
+    
+    :return list(fbx.FbxNode)
+    """
+    results = list()
+    
+    for node in of_type(scene, fbx.FbxNode):
+        
+        if node.GetParent():
+            continue
+        
+        results.append(node)
+    
+    return results
+
 
 # --------------------------------------------------------------------------
 def get_all(scene):
     """
     Returns all the objects within the FbxScene.
-    
+
     :param scene: The scene to get a list of objects from
     :type scene: fbx.FbxScene
 
-    :return: list of fbx.FbxObject 
+    :return: list of fbx.FbxObject
     """
     objects = []
     object_count = scene.RootProperty.GetSrcObjectCount()
@@ -59,8 +81,8 @@ def of_type(scene, required_type):
     :param scene: The scene which the search should occur
     :type scene: fbx.FbxScene
 
-    :param node_type: The type name to search for
-    :type node_type: str
+    :param required_type: The type name to search for
+    :type required_type: str or fbx class
 
     :return: List of nodes of the given type
     """
@@ -76,8 +98,13 @@ def of_type(scene, required_type):
 
         # -- If the node is valid, and the type matches
         # -- the required type then we scoop it
-        if node and node.GetTypeName() == required_type:
-            matched.append(node)
+        if isinstance(required_type, str):
+            if node and node.GetTypeName() == required_type:
+                matched.append(node)
+
+        else:
+            if isinstance(node, required_type):
+                matched.append(node)
 
     # -- Return all the matches
     return matched
@@ -90,11 +117,11 @@ def children(scene, recursive=False):
 
     :param scene: The scene to look within for the child nodes
     :type scene: fbx.FbxScene
-    
+
     :param recursive: If True then all the children and their
-        sub-children will be returned. If False then only the 
+        sub-children will be returned. If False then only the
         scenes top level children will be returned.
-        
+
     :return: list(fbx.FbxNode, ...)
     """
     return _node.get_children(scene.GetRootNode(), recursive=recursive)
@@ -106,7 +133,7 @@ def clear_namespaces(scene, nodes=None):
     Clears away the namespace from the given nodes. Where no nodes
     are passed then the namespace is removed from all fbx objects
     within the scene.
-    
+
     :param scene: The scene to remove the namespace from
     :type scene : fbx.FbxScene
 
@@ -124,7 +151,7 @@ def clear_namespaces(scene, nodes=None):
 
         # -- Extract the name of the node so we can inspect it
         node_name = node.GetName()
-        name_parts = node_name.split(':')
+        name_parts = node_name.split(":")
 
         # -- If we have more than one part then the node has a namespace
         # -- so we should remove it
@@ -147,29 +174,45 @@ def clear(scene, excluding=None):
 
     :return: None
     """
+    node_names = list()
 
     # -- Start by moving any nodes which we want to exclude from the
     # -- clearing process to the scene root
-    for idx, node, in enumerate(excluding):
+    for (
+        idx,
+        node,
+    ) in enumerate(excluding):
 
         # -- Ensure we're working with Fbx objects
         if not isinstance(node, fbx.FbxObject):
             node = get(scene, node)
             excluding[idx] = node
 
-        # -- Move the item to the scene root
-        _node.set_parent(excluding[idx], None)
-
         # -- From this point on we're going to deal with names
         # -- so lets switch to that
-        excluding[idx] = node.GetName()
+        node_names.append(node.GetName())
 
-    # -- We now need to cycle over all the root nodes
+    for node in excluding:
+
+        # -- Move the item to the highest level node which is expected
+        # -- to be protected from the clearing
+        all_parents = _node.get_parents(node)
+        node_to_reparent = node
+
+        for parent in all_parents:
+            if parent.GetName() not in node_names:
+                _node.set_parent(node_to_reparent, None)
+
+                break
+
+            node_to_reparent = parent
+
+            # -- We now need to cycle over all the root nodes
     # -- in the scene
     for top_level_node in children(scene, recursive=False)[:]:
 
         # -- if root node in preserve list then we need to delete it
-        if top_level_node.GetName() in excluding:
+        if top_level_node.GetName() in node_names:
             continue
 
         # -- Find all the nodes under the current child which
@@ -187,3 +230,59 @@ def clear(scene, excluding=None):
             # -- destroyed.
             scene.RemoveNode(node_to_remove)
             node_to_remove.Destroy()
+
+
+# --------------------------------------------------------------------------
+def delete_node(scene, node=None):
+    """
+    This will remove a given node from the scene including its children
+
+    :param scene: The scene to clear
+    :type scene: fbx.FbxScene
+
+    :param node: A single node
+    :type node: fbx.FbxNode
+
+    :return: None
+    """
+    if not node:
+        return
+
+    # -- Ensure we're working with Fbx objects
+    if not isinstance(node, fbx.FbxObject):
+        node = get(scene, node)
+
+    if not node:
+        return
+
+    all_child_nodes = _node.get_children(node, recursive=True)
+    all_child_nodes.reverse()
+
+    # -- As well as the children we need to make
+    # -- sure we remove this root node too
+    all_child_nodes.append(node)
+
+    for node_to_remove in all_child_nodes:
+        # -- Remove the node and then ask for it to be
+        # -- destroyed.
+        scene.RemoveNode(node_to_remove)
+        node_to_remove.Destroy()
+
+
+# --------------------------------------------------------------------------------------
+def get_header_property(scene, property_name):
+    """
+    This allows the returning on properties from the header data, including
+    the harder to reach properties such as ApplicationNativeFile
+    """
+    scene_info = scene.GetSceneInfo()
+
+    prop = scene_info.GetFirstProperty()
+    while prop.IsValid():
+
+        if prop.GetName() == property_name:
+            return str(fbx.FbxPropertyString(prop).Get())
+
+        prop = scene_info.GetNextProperty(prop)
+
+    return None

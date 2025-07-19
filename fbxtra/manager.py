@@ -13,7 +13,10 @@ def get():
     :return: fbx.FbxManager
     """
     for candidate in gc.get_objects():
-        if isinstance(candidate, fbx.FbxManager):
-            return candidate
+        try:
+            if isinstance(candidate, fbx.FbxManager):
+                return candidate
+        except ReferenceError:
+            continue
 
     return fbx.FbxManager.Create()
