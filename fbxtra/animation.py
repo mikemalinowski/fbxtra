@@ -426,3 +426,11 @@ def clamp_unit_curve_boundary(curve_node):
             # -- Check if the value is 0 or 1
             if value == 0.0 or value == 1.0:
                 curve.KeySetTangentMode(i, fbx.FbxAnimCurveDef.eTangentGenericClamp)
+
+
+def set_current_take_name(scene: fbx.FbxScene, name: str) -> None:
+    """
+    This will set the current takes name to the given name
+    """
+    anim_stack = scene.GetCurrentAnimationStack()
+    anim_stack.SetName(name)
