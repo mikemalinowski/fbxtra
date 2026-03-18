@@ -6,3 +6,6 @@ This module assumes you already have the standard fbx module - which
 is available from here: 
 
     https://www.autodesk.com/developer-network/platform-technologies/fbx-sdk-2019-0
+
+Alternatively, there is a pre-compiled version that works with Maya 2026 within 
+this repository.

@@ -24,3 +24,4 @@ from . import scene
 from . import transforms
 from . import geometry
 from . import properties
+from . import document
