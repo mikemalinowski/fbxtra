@@ -286,3 +286,20 @@ def get_header_property(scene, property_name):
         prop = scene_info.GetNextProperty(prop)
 
     return None
+
+
+def get_from_node(node: fbx.FbxNode) -> fbx.FbxScene:
+    """
+    This will return the FbxScene from the given FbxNode
+
+    :param node: The node to query
+    :return: The FbxScene from the given FbxNode
+    """
+    if node is None:
+        return None
+
+    current = node
+    while current.GetParent() is not None:
+        current = current.GetParent()
+
+    return current.GetScene()
