@@ -86,7 +86,7 @@ def load(fbx_path, framerate=_DEFAULT_FRAMERATE):
 
 
 # --------------------------------------------------------------------------
-def save(scene, fbx_path):
+def save(scene, fbx_path, ascii=True):
     """
     Takes in an fbx.FbxScene instance and writes that scene out
     to the given fbx path.
@@ -117,7 +117,7 @@ def save(scene, fbx_path):
     # -- in the ascii format
     scene_exporter.Initialize(
         fbx_path,
-        ascii_format_index(),
+        ascii_format_index() if ascii else binary_format_index(),
         ios,
     )
 
@@ -153,6 +153,38 @@ def ascii_format_index():
         # -- its safe to use
         if registry.WriterIsFBX(idx):
             if "ascii" in registry.GetWriterFormatDescription(idx):
+                return idx
+
+    # -- Fall back to the default if all else fails
+    return -1
+
+
+# --------------------------------------------------------------------------
+def binary_format_index():
+    """
+    Returns the ascii format index
+
+    :return: int designator for ascii format
+    """
+
+    # -- Get access to teh fbx manager
+    fbx_manager = _manager.get()
+
+    # -- We need cycle all the write formats to find the right
+    # -- one.
+    format_count = fbx_manager.GetIOPluginRegistry().GetWriterFormatCount()
+
+    # -- Get the fbx registry, this is where we look for
+    # -- formats
+    registry = fbx_manager.GetIOPluginRegistry()
+
+    # -- Cycle all the formats
+    for idx in range(format_count):
+
+        # -- If the format description containts ascii we know
+        # -- its safe to use
+        if registry.WriterIsFBX(idx):
+            if "binary" in registry.GetWriterFormatDescription(idx):
                 return idx
 
     # -- Fall back to the default if all else fails
