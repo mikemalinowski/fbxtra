@@ -196,16 +196,24 @@ def clear(scene, excluding=None):
 
         # -- Move the item to the highest level node which is expected
         # -- to be protected from the clearing
-        all_parents = _node.get_parents(node)
+        try:
+            all_parents = _node.get_parents(node)
+        except:
+            continue
+
         node_to_reparent = node
 
-        for parent in all_parents:
-            if parent.GetName() not in node_names:
-                _node.set_parent(node_to_reparent, None)
+        is_safe = False
 
+        for parent in all_parents:
+            if parent and parent.GetName() in node_names:
+                is_safe = True
                 break
 
-            node_to_reparent = parent
+        if is_safe:
+            continue
+
+        _node.set_parent(node_to_reparent, None)
 
             # -- We now need to cycle over all the root nodes
     # -- in the scene
@@ -230,6 +238,12 @@ def clear(scene, excluding=None):
             # -- destroyed.
             scene.RemoveNode(node_to_remove)
             node_to_remove.Destroy()
+
+def _any_in(match_list_a, match_list_b):
+    for a in names_a:
+        if a in names_b:
+            return True
+    return False
 
 
 # --------------------------------------------------------------------------

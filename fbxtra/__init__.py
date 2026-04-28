@@ -26,3 +26,4 @@ from . import geometry
 from . import properties
 from . import document
 from . import layers
+from . import morphs
