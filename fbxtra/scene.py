@@ -283,6 +283,33 @@ def delete_node(scene, node=None):
         node_to_remove.Destroy()
 
 
+# --------------------------------------------------------------------------
+def remove_poses(scene):
+    """
+    Removes all bind/rest poses (FbxPose) from the scene.
+
+    Stale bind poses carried over from a source file can cause DCCs such as
+    Maya to generate duplicate skinClusters on import, so it is often desirable
+    to strip them from a generated scene.
+
+    :param scene: The scene to remove the poses from
+    :type scene: fbx.FbxScene
+
+    :return: The number of poses removed
+    :rtype: int
+    """
+    removed = 0
+
+    # -- Iterate in reverse as removing a pose shifts the remaining indices
+    for idx in reversed(range(scene.GetPoseCount())):
+        pose = scene.GetPose(idx)
+        scene.RemovePose(idx)
+        pose.Destroy()
+        removed += 1
+
+    return removed
+
+
 # --------------------------------------------------------------------------------------
 def get_header_property(scene, property_name):
     """

@@ -27,3 +27,5 @@ from . import properties
 from . import document
 from . import layers
 from . import morphs
+from . import skinning
+from . import spaces

@@ -5,6 +5,7 @@ import fbx
 
 from . import animation as _animation
 from . import transforms as _transforms
+from . import spaces
 
 
 # --------------------------------------------------------------------------
@@ -96,7 +97,6 @@ def get_parent(node, recursive=False):
     return parent
 
 
-# --------------------------------------------------------------------------
 def set_parent(node, parent, keep_worldspace=True):
     """
     Re-parents the given node to be a child of the given parent.
@@ -106,49 +106,43 @@ def set_parent(node, parent, keep_worldspace=True):
 
     :param parent: The node to set as the parent. If None, then the
         node will be made a child of the scene root (RootNode)
-    :type parent: fbx.FbxNode
+    :type parent: fbx.FbxNode or None
 
     :param keep_worldspace: If True then the worldspace transform of the node
-        being reparented will be retained
+        being reparented will be retained. If False the node keeps its local
+        transform and moves with its new parent.
     :type keep_worldspace: bool
 
     :return: None
     """
+    fbx_scene = node.GetScene()
+
     if not parent:
-        parent = node.GetScene().GetRootNode()
+        parent = fbx_scene.GetRootNode()
 
     if not keep_worldspace:
-        # -- In this situation we do not need to do any math
-        # -- to retain the worldspace transform. So we can just
-        # -- add the child and be done
+        # -- Nothing to solve for. The local transform is left as-is and the
+        # -- node simply inherits whatever the new parent gives it
         parent.AddChild(node)
+        fbx_scene.GetAnimationEvaluator().Reset()
         return
 
-    # -- To reach here we need to add the child whilst holding the relative
-    # -- transform
-    node_xfo = node.EvaluateGlobalTransform()
-    parent_xfo = parent.EvaluateGlobalTransform()
-    relative_xfo = node_xfo * parent_xfo.Inverse()
+    with spaces.Space(node.GetScene(), fbx.FbxSystemUnit.cm):
+        # -- Take a copy rather than holding onto the evaluator's own matrix, as
+        # -- we are about to invalidate its cache
+        world = fbx.FbxAMatrix(node.EvaluateGlobalTransform())
 
-    parent.AddChild(node)
+        parent.AddChild(node)
 
-    # -- We can only set via translate, rotate and scale, so get
-    # -- those out of the matrix, and we want a list of three
-    # -- items
-    translate = [v for v in relative_xfo.GetT()][:3]
-    rotate = [v for v in relative_xfo.GetR()][:3]
-    scale = [v for v in relative_xfo.GetS()][:3]
+        # -- AddChild does not invalidate the evaluator, so without this reset
+        # -- everything queried below still describes the pre-move hierarchy
+        fbx_scene.GetAnimationEvaluator().Reset()
 
-    node.LclTranslation.Set(
-        fbx.FbxDouble3(*translate),
-    )
-    node.LclRotation.Set(
-        fbx.FbxDouble3(*rotate),
-    )
+        # -- Solve for the local transform which puts the node back where it was.
+        # -- The scene root evaluates to identity, so it needs no special casing
+        parent_world = fbx.FbxAMatrix(parent.EvaluateGlobalTransform())
 
-    node.LclScaling.Set(
-        fbx.FbxDouble3(*scale),
-    )
+        _transforms.set_matrix(node, parent_world.Inverse() * world)
 
 
 # --------------------------------------------------------------------------

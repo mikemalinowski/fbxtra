@@ -8,6 +8,8 @@ try:
 except AttributeError:
     _DEFAULT_INTERPOLATION = fbx.FbxAnimCurveDef.eInterpolationLinear
 
+_AXES = ("X", "Y", "Z")
+
 
 # ----------------------------------------------------------------------------------
 def get_time_range(scene: fbx.FbxScene) -> list:
@@ -260,6 +262,298 @@ def shift_all_keys(scene: fbx.FbxScene, offset: int, reframe=False):
             start_frame=lowest_frame or 0,
             end_frame=highest_frame or 0,
         )
+
+
+# ----------------------------------------------------------------------------------
+def zero_start_pose(node: fbx.FbxNode) -> None:
+    """
+    Rebases the local animation on the given node so that at its first keyed
+    frame both LclTranslation and LclRotation are (0, 0, 0).
+
+    The rebase treats the start pose as a single rigid transform
+    M_start = T_start * R_start and applies its inverse to every keyed frame:
+
+        R_new(t) = R_start^-1 * R_current(t)
+        T_new(t) = R_start^-1 * (T_current(t) - T_start)
+
+    The translation trajectory is therefore expressed in the new (identity)
+    frame rather than the original orientation, so a walk cycle originally
+    facing world +Y correctly tracks local +Z after the rebase.
+
+    Translation and rotation keys are re-baked at the union of their per-channel
+    key times using linear interpolation. Static (unkeyed) values on translation
+    and rotation are also zeroed. Scale is left untouched.
+
+    Assumes XYZ Euler rotation order (Maya / FBX default). Nodes with a
+    different FbxNode.RotationOrder should be normalised first.
+
+    :param node: The node whose local animation should be rebased.
+    :type node: fbx.FbxNode
+
+    :return: None
+    """
+    scene = node.GetScene()
+    anim_layers = layers(scene)
+
+    if not anim_layers:
+        node.LclTranslation.Set(fbx.FbxDouble3(0.0, 0.0, 0.0))
+        node.LclRotation.Set(fbx.FbxDouble3(0.0, 0.0, 0.0))
+        return
+
+    for layer in anim_layers:
+        _rebase_layer_to_origin(node, layer)
+
+    node.LclTranslation.Set(fbx.FbxDouble3(0.0, 0.0, 0.0))
+    node.LclRotation.Set(fbx.FbxDouble3(0.0, 0.0, 0.0))
+
+
+# ----------------------------------------------------------------------------------
+def _rebase_layer_to_origin(node: fbx.FbxNode, layer: fbx.FbxAnimLayer) -> None:
+    """
+    Applies the origin-rebase to a single animation layer of the given node.
+    Computes the start pose from the earliest keyed frame across the six
+    translation and rotation channels, then rewrites the layer's translation
+    and rotation curves so that at that frame the local transform is identity.
+
+    :param node: The node whose curves on this layer should be rebased.
+    :type node: fbx.FbxNode
+
+    :param layer: The animation layer to operate on.
+    :type layer: fbx.FbxAnimLayer
+
+    :return: None
+    """
+    trn_curves = [node.LclTranslation.GetCurve(layer, ch) for ch in _AXES]
+    trn_statics = [node.LclTranslation.Get()[i] for i in range(3)]
+
+    rot_curves = [node.LclRotation.GetCurve(layer, ch) for ch in _AXES]
+    rot_statics = [node.LclRotation.Get()[i] for i in range(3)]
+
+    start_frame = _earliest_key_frame(trn_curves + rot_curves)
+    if start_frame is None:
+        return
+
+    start_t = _sample_channels_at(trn_curves, trn_statics, start_frame)
+    start_r = _sample_channels_at(rot_curves, rot_statics, start_frame)
+
+    inv_start = fbx.FbxAMatrix()
+    inv_start.SetT(fbx.FbxVector4(start_t[0], start_t[1], start_t[2], 0.0))
+    inv_start.SetR(fbx.FbxVector4(start_r[0], start_r[1], start_r[2], 0.0))
+    inv_start = inv_start.Inverse()
+
+    _rebuild_translation(node, layer, trn_curves, trn_statics, inv_start)
+    _rebuild_rotation(node, layer, rot_curves, rot_statics, inv_start)
+
+
+# ----------------------------------------------------------------------------------
+def _rebuild_translation(node, layer, curves, statics, inv_start):
+    """
+    Rewrites the three LclTranslation channel curves on the given layer.
+
+    For every unique key time across the three input curves, the current XYZ
+    vector is sampled (falling back to the property's static value on channels
+    that have no curve), transformed by inv_start as a point, and written back
+    as a new key on all three channels. Existing keys are cleared first.
+
+    :param node: The node the translation curves belong to.
+    :type node: fbx.FbxNode
+
+    :param layer: The animation layer to write into.
+    :type layer: fbx.FbxAnimLayer
+
+    :param curves: The three existing LclTranslation channel curves (X, Y, Z).
+        Any entry may be None if that channel has no curve on this layer.
+    :type curves: list(fbx.FbxAnimCurve or None)
+
+    :param statics: The three static LclTranslation channel values, used when
+        the corresponding curve entry is None.
+    :type statics: list(float)
+
+    :param inv_start: The inverse of the full start-pose rigid transform.
+        Applied via MultT so each sampled position becomes
+        R_start^-1 * (T_current - T_start).
+    :type inv_start: fbx.FbxAMatrix
+
+    :return: None
+    """
+    key_frames = _union_key_frames(curves)
+    if not key_frames:
+        return
+
+    new_keys = []
+    for frame in key_frames:
+        current = _sample_channels_at(curves, statics, frame)
+        transformed = inv_start.MultT(
+            fbx.FbxVector4(current[0], current[1], current[2], 0.0)
+        )
+        new_keys.append((frame, [transformed[0], transformed[1], transformed[2]]))
+
+    resolved = [node.LclTranslation.GetCurve(layer, ch, True) for ch in _AXES]
+    _write_channel_keys(resolved, new_keys)
+
+
+# ----------------------------------------------------------------------------------
+def _rebuild_rotation(node, layer, curves, statics, inv_start):
+    """
+    Rewrites the three LclRotation channel curves on the given layer.
+
+    For every unique key time across the three input curves, the current Euler
+    XYZ triplet is sampled (falling back to the property's static value on
+    channels that have no curve), composed as inv_start * R_current via
+    FbxAMatrix, and the resulting Euler is written back as a new key on all
+    three channels. Existing keys are cleared first.
+
+    Only the rotation component of the composition is read out, so the
+    translation portion of inv_start is harmless here.
+
+    :param node: The node the rotation curves belong to.
+    :type node: fbx.FbxNode
+
+    :param layer: The animation layer to write into.
+    :type layer: fbx.FbxAnimLayer
+
+    :param curves: The three existing LclRotation channel curves (X, Y, Z).
+        Any entry may be None if that channel has no curve on this layer.
+    :type curves: list(fbx.FbxAnimCurve or None)
+
+    :param statics: The three static LclRotation channel values, used when
+        the corresponding curve entry is None.
+    :type statics: list(float)
+
+    :param inv_start: The inverse of the full start-pose rigid transform.
+    :type inv_start: fbx.FbxAMatrix
+
+    :return: None
+    """
+    key_frames = _union_key_frames(curves)
+    if not key_frames:
+        return
+
+    new_keys = []
+    for frame in key_frames:
+        current = _sample_channels_at(curves, statics, frame)
+
+        current_matrix = fbx.FbxAMatrix()
+        current_matrix.SetR(fbx.FbxVector4(current[0], current[1], current[2], 0.0))
+
+        result = inv_start * current_matrix
+        r = result.GetR()
+        new_keys.append((frame, [r[0], r[1], r[2]]))
+
+    resolved = [node.LclRotation.GetCurve(layer, ch, True) for ch in _AXES]
+    _write_channel_keys(resolved, new_keys)
+
+
+# ----------------------------------------------------------------------------------
+def _earliest_key_frame(curves):
+    """
+    Returns the lowest key time (as an integer frame count) across the given
+    curves. Curves that are None or have no keys are skipped. If no curve
+    contributes any key, None is returned.
+
+    :param curves: The curves to inspect.
+    :type curves: list(fbx.FbxAnimCurve or None)
+
+    :return: The earliest frame number, or None if nothing is keyed.
+    :rtype: int or None
+    """
+    earliest = None
+    for curve in curves:
+        if curve is None or curve.KeyGetCount() == 0:
+            continue
+        frame = curve.KeyGetTime(0).GetFrameCount()
+        if earliest is None or frame < earliest:
+            earliest = frame
+    return earliest
+
+
+# ----------------------------------------------------------------------------------
+def _union_key_frames(curves):
+    """
+    Returns a sorted list of the unique key times (as integer frame counts)
+    covering every key across the given curves. Curves that are None are
+    skipped.
+
+    :param curves: The curves to inspect.
+    :type curves: list(fbx.FbxAnimCurve or None)
+
+    :return: Sorted list of frame numbers, empty if no keys exist.
+    :rtype: list(int)
+    """
+    frames = set()
+    for curve in curves:
+        if curve is None:
+            continue
+        for key_idx in range(curve.KeyGetCount()):
+            frames.add(curve.KeyGetTime(key_idx).GetFrameCount())
+    return sorted(frames)
+
+
+# ----------------------------------------------------------------------------------
+def _sample_channels_at(curves, statics, frame):
+    """
+    Samples a triple of parallel channel curves at the given frame. Where a
+    curve is None the corresponding static value is returned unchanged;
+    otherwise the curve is evaluated at that frame.
+
+    :param curves: Three parallel channel curves. Any entry may be None.
+    :type curves: list(fbx.FbxAnimCurve or None)
+
+    :param statics: Three static channel values, used as fallbacks for None
+        curves.
+    :type statics: list(float)
+
+    :param frame: The frame number at which to sample.
+    :type frame: int
+
+    :return: The three sampled channel values.
+    :rtype: list(float)
+    """
+    fbx_time = fbx.FbxTime()
+    fbx_time.SetFrame(frame)
+
+    values = []
+    for axis, curve in enumerate(curves):
+        if curve is None:
+            values.append(statics[axis])
+        else:
+            values.append(curve.Evaluate(fbx_time)[0])
+    return values
+
+
+# ----------------------------------------------------------------------------------
+def _write_channel_keys(curves, keys):
+    """
+    Clears the given three channel curves and writes a new set of keys onto
+    them. Each entry in ``keys`` is a (frame, [x, y, z]) pair; a key is added
+    to every channel at that frame using the module's default interpolation.
+
+    Assumes all three curves already exist (create them via
+    property.GetCurve(layer, channel, True) before calling).
+
+    :param curves: The three channel curves to overwrite.
+    :type curves: list(fbx.FbxAnimCurve)
+
+    :param keys: The key data to write, one entry per frame.
+    :type keys: list(tuple(int, list(float)))
+
+    :return: None
+    """
+    for curve in curves:
+        curve.KeyModifyBegin()
+        curve.KeyClear()
+
+    for frame, values in keys:
+        fbx_time = fbx.FbxTime()
+        fbx_time.SetFrame(frame)
+
+        for axis, curve in enumerate(curves):
+            key_idx, _ = curve.KeyAdd(fbx_time)
+            curve.KeySetValue(key_idx, values[axis])
+            curve.KeySetInterpolation(key_idx, _DEFAULT_INTERPOLATION)
+
+    for curve in curves:
+        curve.KeyModifyEnd()
 
 
 # --------------------------------------------------------------------------------------

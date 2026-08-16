@@ -9,10 +9,10 @@ from . import manager as _manager
 
 try:
     _DEFAULT_FRAMERATE = fbx.FbxTime.eFrames30
-   
+
 except AttributeError:
     _DEFAULT_FRAMERATE = fbx.FbxTime.EMode.eFrames30
-    
+
 
 # ------------------------------------------------------------------------------
 def load(fbx_path, framerate=_DEFAULT_FRAMERATE):
@@ -86,7 +86,69 @@ def load(fbx_path, framerate=_DEFAULT_FRAMERATE):
 
 
 # --------------------------------------------------------------------------
-def save(scene, fbx_path, ascii=True):
+def merge(scene, fbx_path, framerate=_DEFAULT_FRAMERATE):
+    """
+    Imports the contents of the given fbx file into an already-populated
+    scene, merging the two together. The imported nodes are added under
+    the existing scene root.
+
+    :param scene: The scene to merge the file into
+    :type scene: fbx.FbxScene
+
+    :param fbx_path: The absolute path to the fbx file to merge in
+    :type fbx_path: str
+
+    :param framerate: This ensures that no default fbx settings will override
+        the given framerate if its defined
+    :type framerate: FbxTime.eFrames
+
+    :return: The scene that was merged into, or False on failure
+    """
+    # -- Load the incoming file into its own scene, leaving the target intact
+    source_scene = load(fbx_path, framerate=framerate)
+    if not source_scene:
+        return False
+
+    source_root = source_scene.GetRootNode()
+    target_root = scene.GetRootNode()
+    source_globals = source_scene.GetGlobalSettings()
+
+    # -- Grab the top level nodes before we start moving connections around
+    top_level = [
+        source_root.GetChild(idx)
+        for idx in range(source_root.GetChildCount())
+    ]
+
+    # -- Re-home every object (nodes, meshes, materials, ...) onto the target
+    # -- scene. Re-parenting a node alone is not enough: the fbx exporter only
+    # -- serialises objects that belong to the scene's document, so anything
+    # -- left owned by the source scene is silently dropped on save.
+    for idx in range(source_scene.GetSrcObjectCount()):
+        source_object = source_scene.GetSrcObject(idx)
+
+        if not source_object:
+            continue
+
+        # -- The root node and global settings exist for every scene, so we
+        # -- leave the target's own copies in place
+        if source_object == source_root or source_object == source_globals:
+            continue
+
+        source_object.ConnectDstObject(scene)
+
+    # -- Detach everything from the source scene now that the target owns it
+    source_scene.DisconnectAllSrcObject()
+
+    # -- Re-parent the top level nodes under the target scene root so they sit
+    # -- in the target's hierarchy rather than under the (defunct) source root
+    for node_ in top_level:
+        target_root.AddChild(node_)
+
+    return scene
+
+
+# --------------------------------------------------------------------------
+def save(scene, fbx_path, use_ascii=True):
     """
     Takes in an fbx.FbxScene instance and writes that scene out
     to the given fbx path.
@@ -117,7 +179,7 @@ def save(scene, fbx_path, ascii=True):
     # -- in the ascii format
     scene_exporter.Initialize(
         fbx_path,
-        ascii_format_index() if ascii else binary_format_index(),
+        ascii_format_index() if use_ascii else binary_format_index(),
         ios,
     )
 
