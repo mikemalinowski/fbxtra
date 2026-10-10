@@ -1,6 +1,7 @@
 import fbx
 
 from . import scene as _scene
+from . import transforms as _transforms
 
 try:
     _DEFAULT_INTERPOLATION = fbx.FbxAnimCurveDef.EInterpolationType.eInterpolationLinear
@@ -554,6 +555,233 @@ def _write_channel_keys(curves, keys):
 
     for curve in curves:
         curve.KeyModifyEnd()
+
+
+# ----------------------------------------------------------------------------------
+def make_animation_relative_to_node(
+    node_to_adjust: fbx.FbxNode,
+    reference_node: fbx.FbxNode,
+) -> None:
+    """
+    Rewrites the local animation on node_to_adjust so that its values are
+    expressed in the space of reference_node - as if reference_node were its
+    parent.
+
+    For every baked frame the new local transform is:
+
+        L_new(t) = G_reference(t)^-1 * G_adjust(t)
+
+    where G is the full global transform, so animation on the ancestors of
+    either node is accounted for.
+
+    Because the reference is itself animated the correction matrix changes
+    every frame, and the composition of two rotations does not interpolate
+    linearly. The result is therefore baked on every integer frame between the
+    first and last key which can influence either node (its own channels or
+    any of its ancestors). Outside that span both globals are constant, so the
+    relationship is constant and no keys are needed. If nothing at all is
+    keyed, only the static local transform is rebased and no curves are
+    created.
+
+    Two behaviours worth being explicit about:
+
+    - This function does not reparent. It produces the local values
+      node_to_adjust would need as a child of reference_node; parent it under
+      reference_node afterwards for its world animation to be preserved.
+      Left where it is, it now carries the motion of node_to_adjust relative
+      to reference_node instead.
+
+    - Global transforms are evaluated with all animation layers blended, so
+      the bake is written to the first animation layer and the translation,
+      rotation and scaling curves of node_to_adjust are removed from every
+      other layer.
+
+    Assumes XYZ Euler rotation order (Maya / FBX default) as
+    FbxAMatrix.GetR() reads back in that order; nodes with a different
+    FbxNode.RotationOrder should be normalised first. A reference chain
+    carrying both rotation and non-uniform scale implies shear, which
+    LclTranslation / LclRotation / LclScaling cannot represent - the decompose
+    is lossy in that case.
+
+    :param node_to_adjust: The node whose local animation should be rewritten.
+    :type node_to_adjust: fbx.FbxNode
+
+    :param reference_node: The node whose space the animation is expressed in.
+    :type reference_node: fbx.FbxNode
+
+    :return: None
+    """
+    scene = node_to_adjust.GetScene()
+    anim_layers = layers(scene)
+
+    contributing_frames = _animated_frames_in_chain(node_to_adjust, anim_layers)
+    contributing_frames |= _animated_frames_in_chain(reference_node, anim_layers)
+
+    if not anim_layers or not contributing_frames:
+        _rebase_static_transform(node_to_adjust, reference_node)
+        return
+
+    frames = range(min(contributing_frames), max(contributing_frames) + 1)
+
+    # -- Sample the entire bake up front. Writing curves invalidates the
+    # -- evaluator, so nothing may be modified until every frame is captured
+    evaluator = scene.GetAnimationEvaluator()
+    evaluator.Reset()
+
+    baked = [
+        _relative_matrix_at(node_to_adjust, reference_node, frame)
+        for frame in frames
+    ]
+
+    # -- Strip the existing channels from every layer, so the bake we are
+    # -- about to write is the only contribution
+    for layer in anim_layers:
+        _destroy_trs_curves(node_to_adjust, layer)
+
+    target_layer = anim_layers[0]
+
+    channels = (
+        (node_to_adjust.LclTranslation, "GetT"),
+        (node_to_adjust.LclRotation, "GetR"),
+        (node_to_adjust.LclScaling, "GetS"),
+    )
+
+    for prop, accessor in channels:
+        keys = [
+            (frame, [v for v in getattr(matrix, accessor)()][:3])
+            for frame, matrix in baked
+        ]
+        curves = [prop.GetCurve(target_layer, axis, True) for axis in _AXES]
+        _write_channel_keys(curves, keys)
+
+    # -- Leave the static values matching the first baked frame, and drop the
+    # -- now stale evaluation cache
+    _transforms.set_matrix(node_to_adjust, baked[0][1])
+    evaluator.Reset()
+
+
+# ----------------------------------------------------------------------------------
+def _relative_matrix_at(node_to_adjust, reference_node, frame):
+    """
+    Evaluates the transform of node_to_adjust in the space of reference_node at
+    the given frame.
+
+    Both globals are copied out of the evaluator, as EvaluateGlobalTransform
+    hands back a reference to internal storage which the next call overwrites.
+
+    :param node_to_adjust: The node being re-expressed.
+    :type node_to_adjust: fbx.FbxNode
+
+    :param reference_node: The node providing the space.
+    :type reference_node: fbx.FbxNode
+
+    :param frame: The frame number at which to evaluate.
+    :type frame: int
+
+    :return: The frame number and the relative transform at that frame.
+    :rtype: tuple(int, fbx.FbxAMatrix)
+    """
+    fbx_time = fbx.FbxTime()
+    fbx_time.SetFrame(frame)
+
+    reference_global = fbx.FbxAMatrix(
+        reference_node.EvaluateGlobalTransform(fbx_time),
+    )
+    adjust_global = fbx.FbxAMatrix(
+        node_to_adjust.EvaluateGlobalTransform(fbx_time),
+    )
+
+    return frame, reference_global.Inverse() * adjust_global
+
+
+# ----------------------------------------------------------------------------------
+def _rebase_static_transform(node_to_adjust, reference_node):
+    """
+    Rebases only the static local transform of node_to_adjust into the space of
+    reference_node. Used when neither node - nor any of their ancestors - has
+    any animation to bake.
+
+    :param node_to_adjust: The node being re-expressed.
+    :type node_to_adjust: fbx.FbxNode
+
+    :param reference_node: The node providing the space.
+    :type reference_node: fbx.FbxNode
+
+    :return: None
+    """
+    node_to_adjust.GetScene().GetAnimationEvaluator().Reset()
+
+    _, relative = _relative_matrix_at(node_to_adjust, reference_node, 0)
+    _transforms.set_matrix(node_to_adjust, relative)
+
+
+# ----------------------------------------------------------------------------------
+def _animated_frames_in_chain(node, anim_layers):
+    """
+    Collects every key frame which can influence the global transform of the
+    given node - the translation, rotation and scaling keys of the node itself
+    and of all of its ancestors, across all the given animation layers.
+
+    :param node: The node to walk up from, inclusive.
+    :type node: fbx.FbxNode
+
+    :param anim_layers: The animation layers to inspect.
+    :type anim_layers: list(fbx.FbxAnimLayer)
+
+    :return: The set of contributing frame numbers.
+    :rtype: set(int)
+    """
+    frames = set()
+
+    current = node
+
+    while current:
+        for layer in anim_layers:
+            for prop in _trs_properties(current):
+                frames.update(
+                    _union_key_frames(
+                        [prop.GetCurve(layer, axis) for axis in _AXES],
+                    )
+                )
+
+        current = current.GetParent()
+
+    return frames
+
+
+# ----------------------------------------------------------------------------------
+def _destroy_trs_curves(node, layer):
+    """
+    Removes the translation, rotation and scaling curve nodes of the given node
+    from the given animation layer.
+
+    :param node: The node to strip the curves from.
+    :type node: fbx.FbxNode
+
+    :param layer: The animation layer to strip.
+    :type layer: fbx.FbxAnimLayer
+
+    :return: None
+    """
+    for prop in _trs_properties(node):
+        curve_node = prop.GetCurveNode(layer)
+
+        if curve_node:
+            curve_node.Destroy(True)
+
+
+# ----------------------------------------------------------------------------------
+def _trs_properties(node):
+    """
+    Gives the three local transform properties of a node in a consistent order.
+
+    :param node: The node to read the properties from.
+    :type node: fbx.FbxNode
+
+    :return: The local translation, rotation and scaling properties.
+    :rtype: tuple(fbx.FbxPropertyDouble3, ...)
+    """
+    return node.LclTranslation, node.LclRotation, node.LclScaling
 
 
 # --------------------------------------------------------------------------------------
