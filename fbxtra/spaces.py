@@ -8,7 +8,6 @@ class Space:
         self._existing_space = fbx_scene.GetGlobalSettings().GetSystemUnit()
 
     def __enter__(self):
-        print("in space")
         self._transient_space.ConvertScene(self._fbx_scene)
         self._fbx_scene.GetAnimationEvaluator().Reset()
         return self
